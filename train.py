@@ -3,6 +3,9 @@
 import argparse
 import os
 import time
+from pathlib import Path
+
+from profiling import ensure_profiler_available
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--data', type=str, help='dataset name')
@@ -102,11 +105,9 @@ from dataloader import *
 from mailbox_daemon import *
 from multiprocessing import Process
 from tqdm import tqdm
-from pathlib import Path
 from sklearn.metrics import average_precision_score, roc_auc_score
 from dgl.utils.shared_mem import create_shared_mem_array, get_shared_mem_array
-from profiling import (TrainingProfiler, ensure_profiler_available,
-                       record_function)
+from profiling import TrainingProfiler, record_function
 
 torch.cuda.set_device(local_rank)
 
