@@ -68,6 +68,23 @@ The generated summaries track the same headline metrics as the GNNFlow profiler 
 - peak process RSS
 - stage-level training timings
 
+### Profiling sweep launcher
+
+To mirror the GNNFlow workflow, this branch also includes:
+- `scripts/run_profile_sweep.sh`
+- `scripts/profile_sweep_config.sh`
+
+Run the checked-in sweep config with:
+
+> ./scripts/run_profile_sweep.sh ./scripts/profile_sweep_config.sh
+
+Edit `scripts/profile_sweep_config.sh` to change:
+- datasets
+- batch sizes
+- profiler schedule values
+- world size / group / minibatch parallelism
+- the profiler label stored in summaries via `PROFILE_MODEL_NAME`
+
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
