@@ -7,9 +7,9 @@
 
 DATASETS=(REDDIT)
 
-# DistTGL trains a single architecture in this repo. This label is stored in
-# profiler summaries so downstream plots can distinguish these runs cleanly.
-PROFILE_MODEL_NAME="DistTGL"
+# DistTGL currently behaves like a TGN-style system in this repo, so use TGN
+# as the profiler model label for cross-system comparisons.
+PROFILE_MODEL_NAME="TGN"
 
 BATCH_SIZES=(
   1024

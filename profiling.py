@@ -8,12 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import GPUtil
 import torch
-
-try:
-    import GPUtil
-except ImportError:
-    GPUtil = None
 
 try:
     from torch.profiler import (ProfilerActivity, profile as torch_profile,
@@ -139,8 +135,6 @@ class GpuStatsMonitor(threading.Thread):
 
     def run(self):
         while not self._stop_event.is_set():
-            if GPUtil is None:
-                return
             try:
                 gpu = next(
                     (gpu for gpu in GPUtil.getGPUs()

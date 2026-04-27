@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+
+build/
+dist/
+*.egg-info/
+*.so
+
+minibatches/
+models/
+profiles/
+tb_log/
+
+.DS_Store

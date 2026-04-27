@@ -61,7 +61,7 @@ same batch size you plan to use:
 Useful profiling arguments:
 - `--profile-only`: stop after enough training steps to collect profiler data
 - `--profile-dir <path>`: override the output directory for profiler artifacts
-- `--profile-model-name <name>`: label stored in profiler summaries, default `DistTGL`
+- `--profile-model-name <name>`: label stored in profiler summaries, default `TGN`
 - `--profile-wait`, `--profile-warmup`, `--profile-active`, `--profile-repeat`: profiler schedule controls
 - `--profile-with-stack`, `--profile-with-flops`, `--profile-export-memory-timeline`: enable extra profiler outputs
 
@@ -102,7 +102,7 @@ Edit `scripts/profile_sweep_config.sh` to change:
 - batch sizes
 - profiler schedule values
 - world size / group / minibatch parallelism
-- the profiler label stored in summaries via `PROFILE_MODEL_NAME`
+- the profiler label stored in summaries via `PROFILE_MODEL_NAME` (default `TGN`)
 
 ## Security
 
