@@ -38,6 +38,36 @@ On each machine, execute
 
 where `<NumberofGroupParallelism>` is the `k` in `(i x j x k)` in the paper.
 
+## Profiling
+
+The `profile` branch includes richer profiling hooks in `train.py` that export:
+- per-rank TensorBoard traces
+- per-rank `summary.json`
+- aggregate `summary_all_ranks.json`
+- operator summary tables for CPU time, CUDA time, and memory
+
+Profiler outputs are written under `profiles/<run>/`.
+
+Example profiling run:
+
+> torchrun --nnodes=1 --nproc_per_node=4 --standalone train.py --data REDDIT --group 1 --batchsize 3200 --profile --profile-only --profile-wait 1 --profile-warmup 1 --profile-active 6 --profile-repeat 1
+
+Useful profiling arguments:
+- `--profile-only`: stop after enough training steps to collect profiler data
+- `--profile-dir <path>`: override the output directory for profiler artifacts
+- `--profile-model-name <name>`: label stored in profiler summaries, default `DistTGL`
+- `--profile-wait`, `--profile-warmup`, `--profile-active`, `--profile-repeat`: profiler schedule controls
+- `--profile-with-stack`, `--profile-with-flops`, `--profile-export-memory-timeline`: enable extra profiler outputs
+
+The generated summaries track the same headline metrics as the GNNFlow profiler workflow:
+- step time
+- throughput
+- peak allocated / reserved GPU memory
+- average GPU load and GPU memory utilization
+- average GPU memory used
+- peak process RSS
+- stage-level training timings
+
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.

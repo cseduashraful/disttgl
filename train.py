@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import time
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--data', type=str, help='dataset name')
@@ -18,9 +19,43 @@ parser.add_argument('--log', type=str, default='', help='output log file')
 parser.add_argument('--neg_rng', type=int, default=0, help='how many rngs to use in negative samplers')
 parser.add_argument('--pbar', action='store_true', help='whether to add a progress bar')
 parser.add_argument('--profile', action='store_true', help='whether to profile')
+parser.add_argument('--profile-only', action='store_true',
+                    help='run only enough training steps to collect profiling data')
+parser.add_argument('--profile-dir', type=str, default=None,
+                    help='directory for profiler traces and summaries')
+parser.add_argument('--profile-model-name', type=str, default='DistTGL',
+                    help='model label to store in profiler summaries')
+parser.add_argument('--profile-wait', type=int, default=1,
+                    help='number of initial steps to skip before profiler warmup')
+parser.add_argument('--profile-warmup', type=int, default=1,
+                    help='number of profiler warmup steps')
+parser.add_argument('--profile-active', type=int, default=6,
+                    help='number of active profiler steps per cycle')
+parser.add_argument('--profile-repeat', type=int, default=1,
+                    help='number of profiler schedule cycles to run')
+parser.add_argument('--profile-row-limit', type=int, default=50,
+                    help='row limit for profiler summary tables')
+parser.add_argument('--profile-gpu-sample-interval', type=float, default=0.2,
+                    help='seconds between GPU utilization samples during profiling')
+parser.add_argument('--profile-with-stack', action='store_true',
+                    help='record stack traces in torch profiler output')
+parser.add_argument('--profile-with-flops', action='store_true',
+                    help='record FLOPs estimates in torch profiler output')
+parser.add_argument('--profile-export-memory-timeline', action='store_true',
+                    help='export a memory timeline if supported by the installed torch profiler')
+parser.add_argument('--profile-record-shapes', dest='profile_record_shapes',
+                    action='store_true',
+                    help='record operator input shapes in torch profiler output')
+parser.add_argument('--no-profile-record-shapes', dest='profile_record_shapes',
+                    action='store_false',
+                    help='disable operator shape recording in torch profiler output')
 parser.add_argument('--partial_eval', action='store_true', help='whether to perform validation and test on partial dataset')
 parser.add_argument('--partial_eval_interval', type=int, default=2000, help='how often to perform partial evaluation during training')
+parser.set_defaults(profile_record_shapes=True)
 args = parser.parse_args()
+
+if args.profile_only:
+    args.profile = True
 
 if args.data in ['GDELT', 'LINK']:
     args.partial_eval = True
@@ -31,9 +66,20 @@ if args.data in ['GDELT']:
     args.edge_classification = True
     args.edge_classes = 52
 
+if args.profile:
+    ensure_profiler_available()
+    if args.profile_wait < 0 or args.profile_warmup < 0 or \
+            args.profile_active <= 0 or args.profile_repeat <= 0:
+        raise ValueError("Invalid profiler schedule values")
+
 local_rank = int(os.environ['LOCAL_RANK'])
 global_rank = int(os.environ['RANK'])
 tot_rank = int(os.environ['WORLD_SIZE'])
+REPO_ROOT = Path(__file__).resolve().parent
+
+args.local_rank = local_rank
+args.rank = global_rank
+args.world_size = tot_rank
 
 os.environ['OMP_NUM_THREADS'] = str(args.omp_num_threads)
 os.environ['MKL_NUM_THREADS'] = str(args.omp_num_threads)
@@ -57,9 +103,10 @@ from mailbox_daemon import *
 from multiprocessing import Process
 from tqdm import tqdm
 from pathlib import Path
-from contextlib import nullcontext
 from sklearn.metrics import average_precision_score, roc_auc_score
 from dgl.utils.shared_mem import create_shared_mem_array, get_shared_mem_array
+from profiling import (TrainingProfiler, ensure_profiler_available,
+                       record_function)
 
 torch.cuda.set_device(local_rank)
 
@@ -84,15 +131,22 @@ if global_rank == 0:
     if not os.path.isdir('models'):
         os.mkdir('models')
     path_saver = ['models/{}_{}.pkl'.format(args.data, time.time())]
-    profile_path_saver = ['tb_log/{}_{}.pkl'.format(args.data, time.time())]
 else:
     path_saver = [None]
-    profile_path_saver = [None]
 torch.distributed.broadcast_object_list(path_saver, src=0)
-torch.distributed.broadcast_object_list(profile_path_saver, src=0)
 path_saver = path_saver[0]
-profile_path_saver = profile_path_saver[0]
 
+setup_metrics = {
+    'dataset_load_sec': 0.0,
+    'graph_build_sec': 0.0,
+    'graph_ingestion_sec': 0.0,
+    'feature_load_sec': 0.0,
+    'model_init_sec': 0.0,
+    'cache_init_sec': 0.0,
+    'dataloader_init_sec': 0.0,
+}
+
+feature_load_start = time.perf_counter()
 if local_rank == 0:
     _node_feats, _edge_feats = load_feat(args.data)
 dim_feats = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -126,7 +180,9 @@ if local_rank > 0:
         node_feats = get_shared_mem_array('node_feats', (dim_feats[0], dim_feats[1]), dtype=dim_feats[2])
     if dim_feats[7] == 1:
         edge_feats = get_shared_mem_array('edge_feats', (dim_feats[3], dim_feats[4]), dtype=dim_feats[5])
+setup_metrics['feature_load_sec'] = time.perf_counter() - feature_load_start
 
+dataset_load_start = time.perf_counter()
 sample_param, memory_param, gnn_param, train_param = get_config(args.data, tot_rank, minibatch_parallelism=args.minibatch_parallelism)
 if args.train_neg_samples > 0:
     train_param['train_neg_samples'] = args.train_neg_samples
@@ -137,6 +193,7 @@ if args.batchsize > 0:
 with open('minibatches/{}_stats.pkl'.format(args.data), 'rb') as f:
     data_stats = pickle.load(f)
 num_nodes = data_stats['num_nodes']
+setup_metrics['dataset_load_sec'] = time.perf_counter() - dataset_load_start
 
 tot_group_rank = tot_rank // args.group
 group_rank = global_rank % tot_group_rank
@@ -153,6 +210,7 @@ mb_group_rank = mb_global_rank % mb_tot_group_rank
 mb_group_id = mb_global_rank // mb_tot_group_rank
 
 mailbox = None
+cache_init_start = time.perf_counter()
 if memory_param['type'] != 'none':
     max_read_nodes = train_param['batch_size'] * (2 + train_param['train_neg_samples']) * (sample_param['neighbor'][0] + 1)
     max_write_nodes = train_param['batch_size'] * (2 + train_param['train_neg_samples'])
@@ -199,7 +257,9 @@ if args.partial_eval:
     if local_rank == 0:
         mailbox_eval = MailBox(memory_param, num_nodes, dim_feats[4])
 torch.distributed.barrier()
+setup_metrics['cache_init_sec'] = time.perf_counter() - cache_init_start
 
+model_init_start = time.perf_counter()
 model = GeneralModel(dim_feats[1], dim_feats[4], sample_param, memory_param, gnn_param, train_param, num_nodes, edge_classification=args.edge_classification, edge_classes=args.edge_classes).cuda()
 model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True, process_group=nccl_group)
 
@@ -214,10 +274,20 @@ if memory_param['memory_update'] == 'smart' and not ('choice' in memory_param an
     )
 else:
     raise TypeError
+setup_metrics['model_init_sec'] = time.perf_counter() - model_init_start
 
+dataloader_init_start = time.perf_counter()
 train_dataloader = DataLoader(args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'], args.neg_sets, 'train', minibatch_parallelism=args.minibatch_parallelism, mailbox=mailbox, node_feats=node_feats, edge_feats=edge_feats, edge_classification=args.edge_classification)
 val_dataloader = DataLoader(args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'], args.neg_sets, 'val', edge_classification=args.edge_classification)
 test_dataloader = DataLoader(args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'], args.neg_sets, 'test', edge_classification=args.edge_classification)
+setup_metrics['dataloader_init_sec'] = time.perf_counter() - dataloader_init_start
+
+profiler = TrainingProfiler(
+    args=args,
+    device=torch.device('cuda', local_rank),
+    batch_size=train_param['batch_size'],
+    setup_metrics=setup_metrics,
+    repo_root=REPO_ROOT)
 
 def eval(mode='val', pos_only=False):
     model.eval()
@@ -363,169 +433,40 @@ last_it = -1
 # my_iter = 0
 ii = -mb_tot_group_rank + train_iters // args.group * (args.group - mb_group_id)
 my_iter = train_iters // args.group * (args.group - mb_group_id)
-with torch.profiler.profile(
-    schedule=torch.profiler.schedule(wait=10, warmup=10, active=16, skip_first=0, repeat=1),
-    on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_path_saver)
-) if args.profile else nullcontext() as profiler:
-    for e in range(train_param['epoch']):
-        neg_samples = train_param['train_neg_samples']
-        if local_rank == 0:
-            print('Global Epoch: {:d}'.format(e))
-            if args.log != '':
-                log_f.write('Global Epoch: {:d}\n'.format(e))
-            train_loss = 0
-            if args.pbar:
-                pbar = tqdm(total=train_iters, position=0)
-        torch.distributed.barrier()
-        # print(local_rank, 'here0')
+profiler.start()
+profile_run_complete = False
+for e in range(train_param['epoch']):
+    if profiler.is_complete():
+        profile_run_complete = True
+        break
 
-        train_time = 0
-        t_prep1 = 0
-        t_prep2 = 0
-        t_comput = 0
-        t_writeback = 0
-        for i in range(train_iters):
-            if args.partial_eval and global_rank == 0:
-                if i % args.partial_eval_interval == 0:
-                    eval_loss, eval_ap, eval_mrr, eval_f1mic = partial_eval(mode='val')
-                    if not args.edge_classification:
-                        pbar.write('\tval loss:{:.4f}    val mrr:{:.4f}    val_ap:{:.4f}'.format(eval_loss, eval_mrr, eval_ap))
-                    else:
-                        pbar.write('\tval loss:{:.4f}    val f1mic:{:.4f}'.format(eval_loss, eval_f1mic))
-                    if args.log != '':
-                        if not args.edge_classification:
-                            log_f.write('\tval loss:{:.4f}    val mrr:{:.4f}    val_ap:{:.4f}\n'.format(eval_loss, eval_mrr, eval_ap))
-                        else:
-                            log_f.write('\tval loss:{:.4f}    val f1mic:{:.4f}\n'.format(eval_loss, eval_f1mic))
-                    curr_metric = eval_f1mic if args.edge_classification else eval_mrr
-                    if curr_metric > best_metric:
-                        best_e = e
-                        best_metric = curr_metric
-                        torch.save(model.state_dict(), path_saver)
-                    torch.distributed.barrier()
-            elif args.partial_eval:
-                if i % args.partial_eval_interval == 0:
-                    torch.distributed.barrier()
+    neg_samples = train_param['train_neg_samples']
+    if local_rank == 0:
+        print('Global Epoch: {:d}'.format(e))
+        if args.log != '':
+            log_f.write('Global Epoch: {:d}\n'.format(e))
+        train_loss = 0
+        if args.pbar:
+            pbar = tqdm(total=train_iters, position=0)
+    torch.distributed.barrier()
 
-            # print('{}:iter {}/{} here0'.format(local_rank, i, train_iters - 1))
+    train_time = 0
+    t_prep1 = 0
+    t_prep2 = 0
+    t_comput = 0
+    t_writeback = 0
+    for i in range(train_iters):
+        if profiler.is_complete():
+            profile_run_complete = True
+            break
 
-            model.train()
-            if i == train_iters // args.group * mb_group_id:
-                ii = -mb_tot_group_rank
-                my_iter = 0
-            if my_iter % mb_tot_group_rank == mb_group_rank:
-                ii += mb_tot_group_rank
-            it = ii + mb_group_rank
-            if prefetch_init or (it <= 0 and to_reset):
-                # print('{} init prefetch'.format(local_rank))
-                train_dataloader.init_prefetch(it, num_neg=mb_tot_group_rank, offset=mb_offset, prefetch_interval=mb_tot_group_rank, rank=group_rank, memory_read_buffer=memory_read_buffer, mail_read_buffer=mail_read_buffer, read_1idx_buffer=read_1idx_buffer, read_status=read_status)
-                prefetch_init = False
-                last_it = -1
-            it = 0 if it < 0 else it 
-            it = train_dataloader.tot_length - 1 if it >= train_dataloader.tot_length else it
-
-            # for r in range(tot_rank):
-            #     if local_rank == r:
-            #         print('{}:{} iter'.format(local_rank, it))
-            #     torch.distributed.barrier()
-
-            # print('{}:iter {}/{} here2'.format(local_rank, i, train_iters - 1))
-            if just_reset:
-                just_reset = False
-                reset_status[0] = 0
-            if it == 0 and to_reset:
-                if mb_group_rank == 0 and mb_offset == 0:
-                    # print('{} set reset to -1'.format(local_rank))
-                    reset_status[0] = 1
-                to_reset = False
-                just_reset = True
-                # read_status[group_rank] = -1
-            elif not to_reset:
-                if it > 0:
-                    to_reset = True
-            if just_reset:
-                # a virtual barrier for all reset trainers
-                while reset_status[0] != 2:
-                    pass
-            # torch.distributed.barrier()
-
-            # print('{}:iter {}/{} here1'.format(local_rank, i, train_iters - 1))
-            t_s = time.time()
-            t_train_s = time.time()
-            if last_it != it:
-                train_dataloader.prefetch_next()
-                # torch.distributed.barrier()
-                t_prep1 += time.time() - t_s
-                t_s = time.time()
-                last_it = it
-                if args.edge_classification:
-                    mfg = train_dataloader.get_fetched()
-                    # mailbox.prep_zero_mails(mfg)
-                    mfg = mfg_to_cuda(mfg)
-            else:
-                # torch.distributed.barrier()
-                t_prep1 += time.time() - t_s
-                t_s = time.time()
-            
-            
-            if not args.edge_classification:
-                mfg = train_dataloader.get_fetched()
-                # mailbox.prep_zero_mails(mfg)
-                mfg = mfg_to_cuda(mfg)
-            # print('{} mfg ready at iter {}'.format(local_rank, i))
-            # torch.distributed.barrier()
-            t_prep2 += time.time() - t_s
-            
-            t_s = time.time()
-            optimizer.zero_grad()
-            # torch.cuda.default_stream().wait_stream(mfg.stream)
-            if my_iter % mb_tot_group_rank == mb_group_rank:
-                write_buffer = WriteBuffer(group_rank, memory_write_buffer, mail_write_buffer, write_1idx_buffer, write_status)
-                # print('{} set write_buffer[{}] at iter {}'.format(local_rank, group_rank, i))
-                pred_pos, pred_neg = model(mfg, write_buffer=write_buffer)
-            else:
-                pred_pos, pred_neg = model(mfg)
-            if not args.edge_classification:
-                pred = torch.cat([pred_pos.squeeze(), pred_neg.squeeze()], dim=0).reshape(neg_samples + 1, -1).T
-                loss = creterion(pred, torch.zeros(pred.shape[0], dtype=torch.long, device=pred.device))
-            else:
-                pred = pred_pos
-                loss = creterion(pred, mfg.edge_cls_cuda)
-            loss.backward()
-            optimizer.step()
-            if args.profile:
-                profiler.step()
-            if local_rank == 0:
-                train_loss += float(loss) * train_param['batch_size']
-            # torch.distributed.barrier()
-            # print('\tt_comput: {}ms'.format((time.time() - t_s) * 1000))
-            t_comput += time.time() - t_s
-            
-            t_s = time.time()
-            # if my_iter % mb_tot_group_rank == mb_group_rank:
-            #     mailbox.update_memory_and_mailbox(mfg, model.module.memory_updater.last_updated_memory)
-            # torch.distributed.barrier()
-            t_writeback += time.time() - t_s
-
-            train_time += time.time() - t_train_s
-            if local_rank == 0:
-                if args.pbar:
-                    pbar.update(1)
-
-            my_iter += 1
-        if local_rank == 0:
-            print('\ttrain loss:{:.4f}  train time:{:.2f}'.format(train_loss, train_time))
-            print('\tt_prep1:{:.2f} t_prep2:{:.2f} t_compute:{:.2f} t_writeback:{:.2f}'.format(t_prep1, t_prep2, t_comput, t_writeback))
-            if args.log != '':
-                log_f.write('\ttrain loss:{:.4f}  train time:{:.2f}\n'.format(train_loss, train_time))
-                log_f.write('\tt_prep1:{:.2f} t_prep2:{:.2f} t_compute:{:.2f} t_writeback:{:.2f}\n'.format(t_prep1, t_prep2, t_comput, t_writeback))
-        if not args.partial_eval:
-            if global_rank == 0:
-                eval_loss, eval_ap, eval_mrr, eval_f1mic = eval('val')
+        if args.partial_eval and not args.profile_only and global_rank == 0:
+            if i % args.partial_eval_interval == 0:
+                eval_loss, eval_ap, eval_mrr, eval_f1mic = partial_eval(mode='val')
                 if not args.edge_classification:
-                    print('\tval loss:{:.4f}    val mrr:{:.4f}    val_ap:{:.4f}'.format(eval_loss, eval_mrr, eval_ap))
+                    pbar.write('\tval loss:{:.4f}    val mrr:{:.4f}    val_ap:{:.4f}'.format(eval_loss, eval_mrr, eval_ap))
                 else:
-                    print('\tval loss:{:.4f}    val f1mic:{:.4f}'.format(eval_loss, eval_f1mic))
+                    pbar.write('\tval loss:{:.4f}    val f1mic:{:.4f}'.format(eval_loss, eval_f1mic))
                 if args.log != '':
                     if not args.edge_classification:
                         log_f.write('\tval loss:{:.4f}    val mrr:{:.4f}    val_ap:{:.4f}\n'.format(eval_loss, eval_mrr, eval_ap))
@@ -536,13 +477,163 @@ with torch.profiler.profile(
                     best_e = e
                     best_metric = curr_metric
                     torch.save(model.state_dict(), path_saver)
-                    _, test_ap, test_mrr, test_f1mic = eval('test')
-                    print('\ttest AP:{:4f}  test MRR:{:4f}'.format(test_ap, test_mrr))
+                torch.distributed.barrier()
+        elif args.partial_eval and not args.profile_only:
+            if i % args.partial_eval_interval == 0:
+                torch.distributed.barrier()
+
+        model.train()
+        if i == train_iters // args.group * mb_group_id:
+            ii = -mb_tot_group_rank
+            my_iter = 0
+        if my_iter % mb_tot_group_rank == mb_group_rank:
+            ii += mb_tot_group_rank
+        it = ii + mb_group_rank
+        if prefetch_init or (it <= 0 and to_reset):
+            train_dataloader.init_prefetch(
+                it, num_neg=mb_tot_group_rank, offset=mb_offset,
+                prefetch_interval=mb_tot_group_rank, rank=group_rank,
+                memory_read_buffer=memory_read_buffer,
+                mail_read_buffer=mail_read_buffer,
+                read_1idx_buffer=read_1idx_buffer, read_status=read_status)
+            prefetch_init = False
+            last_it = -1
+        it = 0 if it < 0 else it
+        it = train_dataloader.tot_length - 1 if it >= train_dataloader.tot_length else it
+
+        if just_reset:
+            just_reset = False
+            reset_status[0] = 0
+        if it == 0 and to_reset:
+            if mb_group_rank == 0 and mb_offset == 0:
+                reset_status[0] = 1
+            to_reset = False
+            just_reset = True
+        elif not to_reset:
+            if it > 0:
+                to_reset = True
+        if just_reset:
+            while reset_status[0] != 2:
+                pass
+
+        stage_durations = {
+            'sampling': 0.0,
+            'feature_fetch': 0.0,
+            'memory_fetch': 0.0,
+            'memory_update': 0.0,
+            'memory_write_back': 0.0,
+            'model_forward': 0.0,
+            'loss_backward_optimizer': 0.0,
+        }
+        profile_state = profiler.begin_step(train_param['batch_size'])
+        t_train_s = time.time()
+
+        stage_start = time.perf_counter()
+        with record_function("sampling"):
+            if last_it != it:
+                train_dataloader.prefetch_next()
+                last_it = it
+                if args.edge_classification:
+                    mfg = train_dataloader.get_fetched()
+                    mfg = mfg_to_cuda(mfg)
+        stage_durations['sampling'] += time.perf_counter() - stage_start
+        t_prep1 += stage_durations['sampling']
+
+        stage_start = time.perf_counter()
+        with record_function("feature_fetch"):
+            if not args.edge_classification:
+                mfg = train_dataloader.get_fetched()
+                mfg = mfg_to_cuda(mfg)
+        stage_durations['feature_fetch'] += time.perf_counter() - stage_start
+        t_prep2 += stage_durations['feature_fetch']
+
+        optimizer.zero_grad()
+        write_buffer = None
+        if my_iter % mb_tot_group_rank == mb_group_rank:
+            writeback_start = time.perf_counter()
+            with record_function("memory_write_back"):
+                write_buffer = WriteBuffer(
+                    group_rank, memory_write_buffer, mail_write_buffer,
+                    write_1idx_buffer, write_status)
+            stage_durations['memory_write_back'] += \
+                time.perf_counter() - writeback_start
+
+        forward_start = time.perf_counter()
+        with record_function("model_forward"):
+            if write_buffer is not None:
+                pred_pos, pred_neg = model(mfg, write_buffer=write_buffer)
+            else:
+                pred_pos, pred_neg = model(mfg)
+        stage_durations['model_forward'] += time.perf_counter() - forward_start
+
+        loss_start = time.perf_counter()
+        with record_function("loss_backward_optimizer"):
+            if not args.edge_classification:
+                pred = torch.cat([pred_pos.squeeze(), pred_neg.squeeze()], dim=0).reshape(neg_samples + 1, -1).T
+                loss = creterion(pred, torch.zeros(pred.shape[0], dtype=torch.long, device=pred.device))
+            else:
+                pred = pred_pos
+                loss = creterion(pred, mfg.edge_cls_cuda)
+            loss.backward()
+            optimizer.step()
+        stage_durations['loss_backward_optimizer'] += \
+            time.perf_counter() - loss_start
+
+        if local_rank == 0:
+            train_loss += float(loss) * train_param['batch_size']
+
+        profiler.end_step(profile_state, stage_durations)
+        t_comput += stage_durations['model_forward'] + \
+            stage_durations['loss_backward_optimizer']
+        t_writeback += stage_durations['memory_write_back']
+
+        train_time += time.time() - t_train_s
+        if local_rank == 0 and args.pbar:
+            pbar.update(1)
+
+        my_iter += 1
+
+        if args.profile_only and profiler.is_complete():
+            profile_run_complete = True
+            break
+
+    if local_rank == 0:
+        print('\ttrain loss:{:.4f}  train time:{:.2f}'.format(train_loss, train_time))
+        print('\tt_prep1:{:.2f} t_prep2:{:.2f} t_compute:{:.2f} t_writeback:{:.2f}'.format(t_prep1, t_prep2, t_comput, t_writeback))
+        if args.log != '':
+            log_f.write('\ttrain loss:{:.4f}  train time:{:.2f}\n'.format(train_loss, train_time))
+            log_f.write('\tt_prep1:{:.2f} t_prep2:{:.2f} t_compute:{:.2f} t_writeback:{:.2f}\n'.format(t_prep1, t_prep2, t_comput, t_writeback))
+
+    if profile_run_complete and args.profile_only:
+        break
+
+    if not args.partial_eval and not args.profile_only:
+        if global_rank == 0:
+            eval_loss, eval_ap, eval_mrr, eval_f1mic = eval('val')
+            if not args.edge_classification:
+                print('\tval loss:{:.4f}    val mrr:{:.4f}    val_ap:{:.4f}'.format(eval_loss, eval_mrr, eval_ap))
+            else:
+                print('\tval loss:{:.4f}    val f1mic:{:.4f}'.format(eval_loss, eval_f1mic))
+            if args.log != '':
+                if not args.edge_classification:
+                    log_f.write('\tval loss:{:.4f}    val mrr:{:.4f}    val_ap:{:.4f}\n'.format(eval_loss, eval_mrr, eval_ap))
+                else:
+                    log_f.write('\tval loss:{:.4f}    val f1mic:{:.4f}\n'.format(eval_loss, eval_f1mic))
+            curr_metric = eval_f1mic if args.edge_classification else eval_mrr
+            if curr_metric > best_metric:
+                best_e = e
+                best_metric = curr_metric
+                torch.save(model.state_dict(), path_saver)
+                _, test_ap, test_mrr, test_f1mic = eval('test')
+                print('\ttest AP:{:4f}  test MRR:{:4f}'.format(test_ap, test_mrr))
+
+if args.profile and not profiler.is_complete():
+    profiler.finish()
     
 if group_rank == 0:
     mailbox_daemon.kill()
 
-if global_rank == 0:
+if global_rank == 0 and not args.profile_only:
     print('Loading model at epoch {}...'.format(best_e))
     model.load_state_dict(torch.load(path_saver))
     model.eval()
