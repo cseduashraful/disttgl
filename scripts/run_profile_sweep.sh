@@ -39,8 +39,12 @@ GROUP="1"
 MINIBATCH_PARALLELISM="1"
 NEG_SETS="32"
 TRAIN_NEG_SAMPLES="1"
+EVAL_NEG_SAMPLES="49"
 OMP_NUM_THREADS="6"
 SEED="0"
+AUTO_GENERATE_MINIBATCHES="1"
+FORCE_REGENERATE_MINIBATCHES="0"
+BUILD_EXT_INPLACE="1"
 
 PROFILE_ONLY="1"
 PROFILE_WAIT="1"
@@ -70,6 +74,105 @@ fi
 mkdir -p "${LOG_DIR}"
 mkdir -p "${PROFILE_DIR_ROOT}"
 
+expected_train_minibatch_dir() {
+    local dataset="$1"
+    local batch_size="$2"
+    if [[ "${MINIBATCH_PARALLELISM}" -gt 1 ]]; then
+        printf '%s/minibatches/%s_%s_bs%s_%s_%s_%s/' \
+            "${REPO_ROOT}" "${MINIBATCH_PARALLELISM}" "${dataset}" "${batch_size}" \
+            "${TRAIN_NEG_SAMPLES}" "${EVAL_NEG_SAMPLES}" "${NEG_SETS}"
+    else
+        printf '%s/minibatches/%s_bs%s_%s_%s_%s/' \
+            "${REPO_ROOT}" "${dataset}" "${batch_size}" \
+            "${TRAIN_NEG_SAMPLES}" "${EVAL_NEG_SAMPLES}" "${NEG_SETS}"
+    fi
+}
+
+expected_eval_minibatch_dir() {
+    local dataset="$1"
+    local batch_size="$2"
+    printf '%s/minibatches/%s_bs%s_%s_eval/' \
+        "${REPO_ROOT}" "${dataset}" "${batch_size}" "${EVAL_NEG_SAMPLES}"
+}
+
+build_sampler_extension() {
+    if [[ "${BUILD_EXT_INPLACE}" != "1" ]]; then
+        return 0
+    fi
+    printf '\nBuilding DistTGL sampler extension in-place\n'
+    (
+        cd "${REPO_ROOT}"
+        "${PYTHON_BIN}" setup.py build_ext --inplace
+    )
+}
+
+generate_minibatches() {
+    local dataset="$1"
+    local batch_size="$2"
+    printf '\nGenerating DistTGL minibatches for dataset=%s batch_size=%s\n' \
+        "${dataset}" "${batch_size}"
+    (
+        cd "${REPO_ROOT}"
+        "${PYTHON_BIN}" gen_minibatch.py \
+            --data "${dataset}" \
+            --gen_eval \
+            --minibatch_parallelism "${MINIBATCH_PARALLELISM}" \
+            --train_neg_samples "${TRAIN_NEG_SAMPLES}" \
+            --neg_sets "${NEG_SETS}" \
+            --batchsize "${batch_size}"
+    )
+}
+
+require_minibatches() {
+    local dataset="$1"
+    local batch_size="$2"
+    local stats_path="${REPO_ROOT}/minibatches/${dataset}_stats.pkl"
+    local train_dir
+    local eval_dir
+    train_dir="$(expected_train_minibatch_dir "${dataset}" "${batch_size}")"
+    eval_dir="$(expected_eval_minibatch_dir "${dataset}" "${batch_size}")"
+
+    if [[ "${FORCE_REGENERATE_MINIBATCHES}" == "1" ]]; then
+        if [[ "${AUTO_GENERATE_MINIBATCHES}" == "1" ]]; then
+            generate_minibatches "${dataset}" "${batch_size}"
+        else
+            printf '\nFORCE_REGENERATE_MINIBATCHES=1 but AUTO_GENERATE_MINIBATCHES=0 for dataset=%s batch_size=%s.\n' \
+                "${dataset}" "${batch_size}" >&2
+            exit 1
+        fi
+    fi
+
+    if [[ -f "${stats_path}" && -d "${train_dir}" && \
+          -f "${train_dir}/train_pos_0.pkl" && \
+          -d "${eval_dir}" && -f "${eval_dir}/val_pos_0.pkl" ]]; then
+        return 0
+    fi
+
+    if [[ "${AUTO_GENERATE_MINIBATCHES}" == "1" ]]; then
+        generate_minibatches "${dataset}" "${batch_size}"
+        if [[ -f "${stats_path}" && -d "${train_dir}" && \
+              -f "${train_dir}/train_pos_0.pkl" && \
+              -d "${eval_dir}" && -f "${eval_dir}/val_pos_0.pkl" ]]; then
+            return 0
+        fi
+        printf '\nAutomatic minibatch generation finished but expected artifacts are still missing.\n' >&2
+    fi
+
+    printf '\nMissing DistTGL minibatches for dataset=%s batch_size=%s.\n' \
+        "${dataset}" "${batch_size}" >&2
+    printf 'Expected artifacts:\n' >&2
+    printf '  %s\n' "${stats_path}" >&2
+    printf '  %s\n' "${train_dir}" >&2
+    printf '  %s\n' "${eval_dir}" >&2
+    printf '\nGenerate them first with:\n' >&2
+    printf '  cd %q\n' "${REPO_ROOT}" >&2
+    printf '  %q setup.py build_ext --inplace\n' "${PYTHON_BIN}" >&2
+    printf '  %q gen_minibatch.py --data %q --gen_eval --minibatch_parallelism %q --train_neg_samples %q --neg_sets %q --batchsize %q\n' \
+        "${PYTHON_BIN}" "${dataset}" "${MINIBATCH_PARALLELISM}" \
+        "${TRAIN_NEG_SAMPLES}" "${NEG_SETS}" "${batch_size}" >&2
+    exit 1
+}
+
 printf 'Profiling sweep configuration\n'
 printf '  datasets: %s\n' "${DATASETS[*]}"
 printf '  batch sizes: %s\n' "${BATCH_SIZES[*]}"
@@ -77,12 +180,20 @@ printf '  profile model name: %s\n' "${PROFILE_MODEL_NAME}"
 printf '  world size: %s\n' "${NPROC_PER_NODE}"
 printf '  group: %s\n' "${GROUP}"
 printf '  minibatch parallelism: %s\n' "${MINIBATCH_PARALLELISM}"
+printf '  eval neg samples: %s\n' "${EVAL_NEG_SAMPLES}"
+printf '  auto-generate minibatches: %s\n' "${AUTO_GENERATE_MINIBATCHES}"
+printf '  force-regenerate minibatches: %s\n' "${FORCE_REGENERATE_MINIBATCHES}"
 printf '  profile-only: %s\n' "${PROFILE_ONLY}"
 printf '  profile dir: %s\n' "${PROFILE_DIR_ROOT}"
 printf '  log dir: %s\n' "${LOG_DIR}"
 
+if [[ "${AUTO_GENERATE_MINIBATCHES}" == "1" && "${DRY_RUN}" != "1" ]]; then
+    build_sampler_extension
+fi
+
 for dataset in "${DATASETS[@]}"; do
     for batch_size in "${BATCH_SIZES[@]}"; do
+        require_minibatches "${dataset}" "${batch_size}"
         run_name="profile_${PROFILE_MODEL_NAME}_${dataset}_bs${batch_size}_group${GROUP}_mb${MINIBATCH_PARALLELISM}_ws${NPROC_PER_NODE}"
         log_path="${LOG_DIR}/${run_name}.log"
 

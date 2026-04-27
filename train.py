@@ -278,9 +278,20 @@ else:
 setup_metrics['model_init_sec'] = time.perf_counter() - model_init_start
 
 dataloader_init_start = time.perf_counter()
-train_dataloader = DataLoader(args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'], args.neg_sets, 'train', minibatch_parallelism=args.minibatch_parallelism, mailbox=mailbox, node_feats=node_feats, edge_feats=edge_feats, edge_classification=args.edge_classification)
-val_dataloader = DataLoader(args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'], args.neg_sets, 'val', edge_classification=args.edge_classification)
-test_dataloader = DataLoader(args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'], args.neg_sets, 'test', edge_classification=args.edge_classification)
+train_dataloader = DataLoader(
+    args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'],
+    args.neg_sets, 'train', train_param['batch_size'],
+    minibatch_parallelism=args.minibatch_parallelism, mailbox=mailbox,
+    node_feats=node_feats, edge_feats=edge_feats,
+    edge_classification=args.edge_classification)
+val_dataloader = DataLoader(
+    args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'],
+    args.neg_sets, 'val', train_param['batch_size'],
+    edge_classification=args.edge_classification)
+test_dataloader = DataLoader(
+    args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'],
+    args.neg_sets, 'test', train_param['batch_size'],
+    edge_classification=args.edge_classification)
 setup_metrics['dataloader_init_sec'] = time.perf_counter() - dataloader_init_start
 
 profiler = TrainingProfiler(

@@ -9,7 +9,9 @@ from utils import *
 from threading import Thread
 
 class DataLoader:
-    def __init__(self, data, train_neg_samples, eval_neg_samples, sets, mode, minibatch_parallelism=1, mailbox=None, node_feats=None, edge_feats=None, edge_classification=False):
+    def __init__(self, data, train_neg_samples, eval_neg_samples, sets, mode,
+                 batch_size, minibatch_parallelism=1, mailbox=None,
+                 node_feats=None, edge_feats=None, edge_classification=False):
         self.edge_classification = edge_classification
         if edge_classification:
             train_neg_samples = 0
@@ -17,12 +19,16 @@ class DataLoader:
             sets = 0
         self.minibatch_parallelism = minibatch_parallelism
         if mode == 'train' and minibatch_parallelism > 1:
-            self.path = 'minibatches/{}_{}_{}_{}_{}/'.format(minibatch_parallelism, data, train_neg_samples, eval_neg_samples, sets)
+            self.path = 'minibatches/{}_{}_bs{}_{}_{}_{}_{}/'.format(
+                minibatch_parallelism, data, batch_size, train_neg_samples,
+                eval_neg_samples, sets)
         else:
-            self.path = 'minibatches/{}_{}_{}_{}/'.format(data, train_neg_samples, eval_neg_samples, sets)
+            self.path = 'minibatches/{}_bs{}_{}_{}_{}/'.format(
+                data, batch_size, train_neg_samples, eval_neg_samples, sets)
         if mode != 'train':
             if not os.path.isfile(self.path + 'val_pos_0.pkl'):
-                self.path = 'minibatches/{}_{}_eval/'.format(data, eval_neg_samples)
+                self.path = 'minibatches/{}_bs{}_{}_eval/'.format(
+                    data, batch_size, eval_neg_samples)
         self.sets = sets
         self.mode = mode
         self.tot_length = len([fn for fn in os.listdir(self.path) if fn.startswith('{}_pos'.format(mode))]) // minibatch_parallelism

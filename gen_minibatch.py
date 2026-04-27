@@ -9,6 +9,8 @@ parser.add_argument('--seed', type=int, default=0, help='random seed to use')
 parser.add_argument('--gen_eval', action='store_true', help='whether to generate evaluation minibatches')
 parser.add_argument('--eval_cap', type=int, default=0, help='maximum number of minibatches in eval and test set')
 parser.add_argument('--minibatch_parallelism', type=int, default=1, help='how many nubmer of GPU per minibatches')
+parser.add_argument('--batchsize', type=int, default=0,
+                    help='override the default training batch size used for minibatch generation')
 parser.add_argument('--edge_classification', action='store_true', help='whether to train with the edge classification task')
 args = parser.parse_args()
 
@@ -46,6 +48,8 @@ tot_rank = 1
 sample_param, memory_param, gnn_param, train_param = get_config(args.data, tot_rank)
 if args.train_neg_samples > 0:
     train_param['train_neg_samples'] = args.train_neg_samples
+if args.batchsize > 0:
+    train_param['batch_size'] = args.batchsize
 
 if args.edge_classification:
     args.neg_sets = 0
@@ -71,9 +75,14 @@ else:
 if not os.path.isdir('minibatches'):
     os.mkdir('minibatches')
 if args.minibatch_parallelism == 1:
-    path = 'minibatches/{}_{}_{}_{}/'.format(args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'], args.neg_sets)
+    path = 'minibatches/{}_bs{}_{}_{}_{}/'.format(
+        args.data, train_param['batch_size'], train_param['train_neg_samples'],
+        train_param['eval_neg_samples'], args.neg_sets)
 else:
-    path = 'minibatches/{}_{}_{}_{}_{}/'.format(args.minibatch_parallelism, args.data, train_param['train_neg_samples'], train_param['eval_neg_samples'], args.neg_sets)
+    path = 'minibatches/{}_{}_bs{}_{}_{}_{}_{}/'.format(
+        args.minibatch_parallelism, args.data, train_param['batch_size'],
+        train_param['train_neg_samples'], train_param['eval_neg_samples'],
+        args.neg_sets)
 if not os.path.isdir(path):
     os.mkdir(path)
 
@@ -201,7 +210,8 @@ for _, rows in tqdm(train_df.groupby(train_df.index // train_param['batch_size']
 
 
 if args.gen_eval:
-    path = 'minibatches/{}_{}_eval/'.format(args.data, train_param['eval_neg_samples'])
+    path = 'minibatches/{}_bs{}_{}_eval/'.format(
+        args.data, train_param['batch_size'], train_param['eval_neg_samples'])
     if not os.path.isdir(path):
         os.mkdir(path)
 

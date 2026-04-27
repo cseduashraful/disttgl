@@ -52,6 +52,12 @@ Example profiling run:
 
 > torchrun --nnodes=1 --nproc_per_node=4 --standalone train.py --data REDDIT --group 1 --batchsize 3200 --profile --profile-only --profile-wait 1 --profile-warmup 1 --profile-active 6 --profile-repeat 1
 
+Before profiling or training, generate the precomputed minibatches for the
+same batch size you plan to use:
+
+> python setup.py build_ext --inplace
+> python gen_minibatch.py --data REDDIT --gen_eval --minibatch_parallelism 1 --batchsize 3200
+
 Useful profiling arguments:
 - `--profile-only`: stop after enough training steps to collect profiler data
 - `--profile-dir <path>`: override the output directory for profiler artifacts
@@ -77,6 +83,19 @@ To mirror the GNNFlow workflow, this branch also includes:
 Run the checked-in sweep config with:
 
 > ./scripts/run_profile_sweep.sh ./scripts/profile_sweep_config.sh
+
+The sweep script now checks for batch-size-specific minibatch artifacts before
+launching each run.
+
+By default it will also:
+- run `python setup.py build_ext --inplace` once
+- run `python gen_minibatch.py ... --batchsize <value>` automatically for each
+  batch size in the config when artifacts are missing
+
+You can control that behavior from `scripts/profile_sweep_config.sh` with:
+- `AUTO_GENERATE_MINIBATCHES`
+- `FORCE_REGENERATE_MINIBATCHES`
+- `BUILD_EXT_INPLACE`
 
 Edit `scripts/profile_sweep_config.sh` to change:
 - datasets
