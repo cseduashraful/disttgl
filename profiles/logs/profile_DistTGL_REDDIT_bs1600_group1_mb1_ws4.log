@@ -1,0 +1,61 @@
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/work/pi_mserafini_umass_edu/ashraful/disgnn/disttgl/train.py", line 194, in <module>
+[rank0]:     with open('minibatches/{}_stats.pkl'.format(args.data), 'rb') as f:
+[rank0]: FileNotFoundError: [Errno 2] No such file or directory: 'minibatches/REDDIT_stats.pkl'
+[rank2]: Traceback (most recent call last):
+[rank2]:   File "/work/pi_mserafini_umass_edu/ashraful/disgnn/disttgl/train.py", line 194, in <module>
+[rank2]:     with open('minibatches/{}_stats.pkl'.format(args.data), 'rb') as f:
+[rank2]: FileNotFoundError: [Errno 2] No such file or directory: 'minibatches/REDDIT_stats.pkl'
+[rank3]: Traceback (most recent call last):
+[rank3]:   File "/work/pi_mserafini_umass_edu/ashraful/disgnn/disttgl/train.py", line 194, in <module>
+[rank3]:     with open('minibatches/{}_stats.pkl'.format(args.data), 'rb') as f:
+[rank3]: FileNotFoundError: [Errno 2] No such file or directory: 'minibatches/REDDIT_stats.pkl'
+[rank1]: Traceback (most recent call last):
+[rank1]:   File "/work/pi_mserafini_umass_edu/ashraful/disgnn/disttgl/train.py", line 194, in <module>
+[rank1]:     with open('minibatches/{}_stats.pkl'.format(args.data), 'rb') as f:
+[rank1]: FileNotFoundError: [Errno 2] No such file or directory: 'minibatches/REDDIT_stats.pkl'
+[rank0]:[W427 21:41:11.443770823 ProcessGroupNCCL.cpp:1168] Warning: WARNING: process group has NOT been destroyed before we destruct ProcessGroupNCCL. On normal program exit, the application should call destroy_process_group to ensure that any pending NCCL operations have finished in this process. In rare cases this process can exit before this point and block the progress of another member of the process group. This constraint has always been present,  but this warning has only been added since PyTorch 2.4 (function operator())
+W0427 21:41:12.424452 138824431060800 torch/distributed/elastic/multiprocessing/api.py:858] Sending process 1337983 closing signal SIGTERM
+E0427 21:41:12.428606 138824431060800 torch/distributed/elastic/multiprocessing/api.py:833] failed (exitcode: 1) local_rank: 1 (pid: 1337984) of binary: /work/pi_mserafini_umass_edu/ashraful/.conda/envs/dgl/bin/python
+Traceback (most recent call last):
+  File "/work/pi_mserafini_umass_edu/ashraful/.conda/envs/dgl/bin/torchrun", line 33, in <module>
+    sys.exit(load_entry_point('torch==2.4.0', 'console_scripts', 'torchrun')())
+  File "/work/pi_mserafini_umass_edu/ashraful/.conda/envs/dgl/lib/python3.9/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 348, in wrapper
+    return f(*args, **kwargs)
+  File "/work/pi_mserafini_umass_edu/ashraful/.conda/envs/dgl/lib/python3.9/site-packages/torch/distributed/run.py", line 901, in main
+    run(args)
+  File "/work/pi_mserafini_umass_edu/ashraful/.conda/envs/dgl/lib/python3.9/site-packages/torch/distributed/run.py", line 892, in run
+    elastic_launch(
+  File "/work/pi_mserafini_umass_edu/ashraful/.conda/envs/dgl/lib/python3.9/site-packages/torch/distributed/launcher/api.py", line 133, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/work/pi_mserafini_umass_edu/ashraful/.conda/envs/dgl/lib/python3.9/site-packages/torch/distributed/launcher/api.py", line 264, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+train.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2026-04-27_21:41:12
+  host      : ials-gpu009.unity.rc.umass.edu
+  rank      : 2 (local_rank: 2)
+  exitcode  : 1 (pid: 1337985)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+[2]:
+  time      : 2026-04-27_21:41:12
+  host      : ials-gpu009.unity.rc.umass.edu
+  rank      : 3 (local_rank: 3)
+  exitcode  : 1 (pid: 1337986)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-04-27_21:41:12
+  host      : ials-gpu009.unity.rc.umass.edu
+  rank      : 1 (local_rank: 1)
+  exitcode  : 1 (pid: 1337984)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
