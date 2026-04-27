@@ -79,6 +79,7 @@ The generated summaries track the same headline metrics as the GNNFlow profiler 
 To mirror the GNNFlow workflow, this branch also includes:
 - `scripts/run_profile_sweep.sh`
 - `scripts/profile_sweep_config.sh`
+- `scripts/plot_system_comparison.py`
 
 Run the checked-in sweep config with:
 
@@ -103,6 +104,25 @@ Edit `scripts/profile_sweep_config.sh` to change:
 - profiler schedule values
 - world size / group / minibatch parallelism
 - the profiler label stored in summaries via `PROFILE_MODEL_NAME` (default `TGN`)
+
+### GNNFlow vs DistTGL comparison plots
+
+To compare `TGN` profiler runs from DistTGL against profiler runs from a local
+GNNFlow checkout, use:
+
+> python scripts/plot_system_comparison.py --gnnflow-root /path/to/GNNFlow
+
+By default this compares:
+- dataset `REDDIT`
+- model label `TGN`
+- world size `4`
+- batch sizes `1024 2048 4096 8192 16384 32768`
+- GNNFlow cache `LRUCache` with edge/node cache ratios `0.2 / 0.2`
+
+Outputs are written under `profiles/plots/` in the DistTGL repo and include:
+- an overview scaling comparison PDF
+- a training-stage breakdown PDF
+- a CSV listing the selected profiler runs used in the plots
 
 ## Security
 
